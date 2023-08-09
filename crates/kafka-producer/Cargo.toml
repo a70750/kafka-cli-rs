@@ -1,0 +1,11 @@
+[package]
+name = "kafka-producer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = {workspace = true}
+rdkafka = {workspace = true}
+url = {workspace = true}
+kafka-config = {path = "../kafka-config"}
+schema-registry = {path = "../schema-registry"}

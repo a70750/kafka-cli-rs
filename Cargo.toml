@@ -1,0 +1,22 @@
+[workspace]
+members = [
+    "cli",
+    "crates/*"
+
+]
+
+[workspace.dependencies]
+env_logger = "0.10"
+log = "0.4"
+url = "2"
+config = "0.13"
+tokio = {version = "1", features = ["full"]}
+clap = {version = "4", features = ["derive"]}
+serde = {version = "1", features = ["derive"]}
+serde_json = {version = "1"}
+anyhow = {version = "1"}
+rdkafka = {version = "0.33", features = ["ssl"]}
+apache-avro = "0.15"
+schema_registry_converter = "3"
+opentelemetry = "0.20"
+tracing = {version = "0.1", features = ["log"]}
