@@ -3,6 +3,7 @@ use config::File;
 use rdkafka::ClientConfig;
 use serde::Deserialize;
 use serde::Serialize;
+use url::Url;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Sasl {
@@ -10,15 +11,11 @@ pub struct Sasl {
     pub password: String,
     pub mechanisms: String,
 }
-
-impl Sasl {
-    // pub fn new(username: String, password: String, mechanisms: String) -> Self {
-    //     Self {
-    //         username,
-    //         password,
-    //         mechanisms,
-    //     }
-    // }
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SchemaRegistryConfig {
+    pub username: String,
+    pub password: String,
+    pub endpoint: Url,
 }
 
 impl Default for Sasl {
@@ -36,6 +33,8 @@ pub struct KafkaConfig {
     pub securityprotocol: String,
     pub endpoint: String,
     pub sasl: Option<Sasl>,
+    #[serde(rename = "schema-registry")]
+    pub schema_registry: Option<SchemaRegistryConfig>,
 }
 
 impl KafkaConfig {
@@ -52,6 +51,7 @@ impl KafkaConfig {
             endpoint,
             securityprotocol: "plaintext".to_string(),
             sasl: None,
+            schema_registry: None,
         }
     }
     pub fn from_env() -> anyhow::Result<KafkaConfig> {
@@ -73,6 +73,7 @@ impl Default for KafkaConfig {
             endpoint: "localhost:9092".to_string(),
             securityprotocol: "SASL_SSL".to_string(),
             sasl: Some(Sasl::default()),
+            schema_registry: None,
         }
     }
 }

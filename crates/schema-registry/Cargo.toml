@@ -7,6 +7,6 @@ edition = "2021"
 
 [dependencies]
 apache-avro = {workspace = true}
-schema_registry_converter = {workspace = true}
+schema_registry_converter = {workspace = true, features = ["avro", "json", "easy"]}
 rdkafka = { workspace = true}
 opentelemetry = {workspace = true}

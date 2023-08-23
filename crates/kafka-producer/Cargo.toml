@@ -9,3 +9,10 @@ rdkafka = {workspace = true}
 url = {workspace = true}
 kafka-config = {path = "../kafka-config"}
 schema-registry = {path = "../schema-registry"}
+schema_registry_converter = { workspace = true }
+serde = {workspace = true}
+apache-avro = {workspace = true}
+tracing = {workspace = true}
+opentelemetry = {workspace = true}
+serde_json = {workspace = true}
+pretty_assertions = "1"

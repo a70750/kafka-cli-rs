@@ -42,9 +42,7 @@ pub struct TestConfig {
     #[arg(short, long)]
     pub partition: Option<u32>,
     #[arg(short, long)]
-    pub schema_registry_url: Option<url::Url>,
-    #[arg(short, long)]
-    pub schema_id: Option<String>,
+    pub schema_id: Option<u32>,
 }
 #[derive(Args, Debug)]
 pub struct ConsumerConfig {
@@ -57,9 +55,7 @@ pub struct ConsumerConfig {
     #[arg(short, long)]
     pub partition: Option<u32>,
     #[arg(short, long)]
-    pub schema_registry_url: Option<url::Url>,
-    #[arg(short, long)]
-    pub schema_id: Option<String>,
+    pub schema_id: Option<u32>,
 }
 #[derive(Args, Debug)]
 pub struct ProducerConfig {
@@ -70,8 +66,5 @@ pub struct ProducerConfig {
     #[arg(short, long)]
     pub message_file: Option<PathBuf>,
     #[arg(short, long)]
-    pub schema_registry_url: Option<url::Url>,
-    #[arg(short, long)]
-    pub schema_id: Option<String>,
-
+    pub schema_id: Option<u32>,
 }

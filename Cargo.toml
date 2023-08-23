@@ -1,22 +1,22 @@
 [workspace]
-members = [
-    "cli",
-    "crates/*"
-
-]
+members = ["cli", "crates/*"]
 
 [workspace.dependencies]
 env_logger = "0.10"
 log = "0.4"
-url = "2"
+url = { version = "2", features = ["serde"] }
 config = "0.13"
-tokio = {version = "1", features = ["full"]}
-clap = {version = "4", features = ["derive"]}
-serde = {version = "1", features = ["derive"]}
-serde_json = {version = "1"}
-anyhow = {version = "1"}
-rdkafka = {version = "0.33", features = ["ssl"]}
-apache-avro = "0.15"
-schema_registry_converter = "3"
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+anyhow = { version = "1" }
+apache-avro = "0.14"
+schema_registry_converter = "3.1.0"                # depends on avro 0.14
 opentelemetry = "0.20"
-tracing = {version = "0.1", features = ["log"]}
+tracing = { version = "0.1", features = ["log"] }
+kafka-config = {path = "../crates/kafka-config"}
+rdkafka = {version = "0.33", features = ["ssl", "cmake-build"]}
+# [patch.crates-io]
+# apache-avro = { version = "0.15" }
+

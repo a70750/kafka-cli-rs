@@ -6,8 +6,8 @@
   "fields": [
     {
       "name": "my_field1",
-      "type": "int",
-      "doc": "The int type is a 32-bit signed integer."
+      "type": "long",
+      "doc": "The long type is a 32-bit signed integer."
     },
     {
       "name": "my_field2",

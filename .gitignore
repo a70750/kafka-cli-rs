@@ -20,3 +20,4 @@ Cargo.lock
 
 # Added by me
 .kafka.config.yaml
+.cargo/

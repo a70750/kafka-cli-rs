@@ -1,5 +1,8 @@
+use std::{io::BufReader, time::Duration};
+
 use clap::Parser;
 use env_logger::{Builder, Target};
+use serde_json::Value;
 
 #[tokio::main]
 async fn main() {
@@ -28,8 +31,7 @@ async fn main() {
             ref key_file,
             ref consumer_group_id,
             ref partition,
-            ref schema_registry_url,
-            ref schema_id
+            ref schema_id,
         }) => {
             let consumer = kafka_consumer::KafkaConsumer::new(
                 &config,
@@ -37,8 +39,9 @@ async fn main() {
                 key_file,
                 consumer_group_id,
                 partition,
+                schema_id,
             );
-            match consumer.consume().await {
+            match consumer.consume(None).await {
                 Ok(_) => {
                     log::info!("Integration test passed");
                 }
@@ -52,7 +55,6 @@ async fn main() {
             ref topic,
             ref key_file,
             ref message_file,
-            ref schema_registry_url,
             ref schema_id,
         }) => {
             let producer = kafka_producer::KafkaProducer::new(
@@ -60,7 +62,7 @@ async fn main() {
                 topic,
                 key_file,
                 message_file.as_ref().unwrap(),
-                schema_registry_url
+                schema_id,
             );
             match producer.produce().await {
                 Ok(_) => {
@@ -78,15 +80,14 @@ async fn main() {
             ref message_file,
             ref consumer_group_id,
             ref partition,
-            ref schema_registry_url,
-            ref schema_id
+            ref schema_id,
         }) => {
             let producer = kafka_producer::KafkaProducer::new(
                 &config,
                 topic,
                 key_file,
                 message_file.as_ref().unwrap(),
-                schema_registry_url
+                schema_id,
             );
             let consumer = kafka_consumer::KafkaConsumer::new(
                 &config,
@@ -94,23 +95,48 @@ async fn main() {
                 &Some(key_file.clone()),
                 consumer_group_id,
                 partition,
+                schema_id,
             );
             match producer.produce().await {
-                Ok(_) => {
-                    log::info!("Message produced");
+                Ok((partition, offset)) => {
+                    log::info!("Message produced at partiton {partition} and offset {offset}");
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    match consumer.consume(Some((partition, offset))).await {
+                        Ok(msg) => {
+                            let expect = serde_json::from_slice::<Value>(
+                                std::fs::read(message_file.as_ref().unwrap())
+                                    .unwrap()
+                                    .as_slice(),
+                            )
+                            .unwrap();
+                            let msg =
+                                if let Ok(test) = serde_json::from_slice::<Value>(msg.as_slice()) {
+                                    log::info!("json result {test}");
+                                    test
+                                } else {
+                                    let reader = BufReader::new(msg.as_slice());
+                                    // let mut reader = Reader::with_schema(&schema1, reader).unwrap();
+                                    let mut reader: apache_avro::Reader<'_, BufReader<_>> =
+                                        apache_avro::Reader::new(reader).unwrap();
+                                    let value = reader.next().unwrap().unwrap();
+                                    let value: Value =
+                                        value.try_into().expect("cannot convert avro to json");
+                                    log::info!("msg {value}");
+                                    value
+                                };
+                            log::info!("expect {expect}");
+                            assert_eq!(msg, expect);
+                            log::info!("Integration test passed");
+                        }
+                        Err(e) => {
+                            log::error!("Integration test failed: {:?}", e);
+                            panic!("Integration test failed: {:?}", e);
+                        }
+                    }
                 }
                 Err(e) => {
                     log::error!("Message not produced: {:?}", e);
                     panic!("Message not produced: {:?}", e);
-                }
-            }
-            match consumer.consume().await {
-                Ok(_) => {
-                    log::info!("Integration test passed");
-                }
-                Err(e) => {
-                    log::error!("Integration test failed: {:?}", e);
-                    panic!("Integration test failed: {:?}", e);
                 }
             }
         }

@@ -1,5 +1,11 @@
-use log::{info, warn};
-
+use apache_avro::{from_value, Schema};
+use kafka_config::SchemaRegistryConfig;
+use log::{error, info};
+use opentelemetry::{
+    global,
+    trace::{Span, Tracer},
+    Context,
+};
 use rdkafka::client::ClientContext;
 use rdkafka::config::{ClientConfig, RDKafkaLogLevel};
 use rdkafka::consumer::stream_consumer::StreamConsumer;
@@ -7,71 +13,162 @@ use rdkafka::consumer::*;
 use rdkafka::error::KafkaResult;
 use rdkafka::message::{Headers, Message};
 use rdkafka::topic_partition_list::TopicPartitionList;
-use rdkafka::util::get_rdkafka_version;
+use schema_registry_converter::async_impl::{avro::AvroDecoder, schema_registry::SrSettings};
 
+use core::panic;
 use std::path::PathBuf;
+use std::time::Duration;
 
-pub struct KafkaConsumer {
-    client: ClientConfig,
-    topic: String,
-    key_file: Option<PathBuf>,
-    consumer_group_id: String,
-    partition: Option<u32>,
+pub struct SchemaRegistry<'a> {
+    // url: url::Url,
+    // subject_name_strategy: SubjectNameStrategy,
+    // schema_id: u32,
+    avro_decoder: AvroDecoder<'a>,
+    // sr_settings: SrSettings,
+    // schema: Schema,
 }
 
-impl KafkaConsumer {
+pub struct KafkaConsumer<'a> {
+    client: ClientConfig,
+    topic: String,
+    // key_file: Option<PathBuf>,
+    consumer_group_id: String,
+    // partition: Option<u32>,
+    schema_registry: Option<SchemaRegistry<'a>>,
+}
+
+impl KafkaConsumer<'_> {
     pub fn new(
         config: &kafka_config::KafkaConfig,
         topic: &String,
         key_file: &Option<PathBuf>,
         consumer_group_id: &String,
         partition: &Option<u32>,
+        schema_id: &Option<u32>,
     ) -> Self {
         Self {
             topic: topic.clone(),
             client: config.clone().into(),
-            key_file: key_file.clone(),
+            // key_file: key_file.clone(),
             consumer_group_id: consumer_group_id.clone(),
-            partition: partition.clone(),
+            // partition: partition.clone(),
+            schema_registry: schema_id.clone().map(|id| {
+                let SchemaRegistryConfig {
+                    username,
+                    password,
+                    endpoint,
+                } = config
+                    .schema_registry
+                    .as_ref()
+                    .expect("schema registry config must be provided when using schema registry");
+                let sr_settings: SrSettings = SrSettings::new_builder(endpoint.to_string())
+                    .set_basic_authorization(username, Some(password))
+                    .build()
+                    .expect("Failed to build schema registry settings");
+                let avro_decoder = AvroDecoder::new(sr_settings.clone());
+                // let schema = std::fs::read_to_string("resources/msg.avro")
+                //     .expect("Should have been able to read the file");
+                // let schema: Schema = Schema::parse_str(&schema).unwrap();
+                // let subject_name_strategy =
+                //     SubjectNameStrategy::TopicNameStrategy(topic.clone(), false);
+                // upload schema!
+                // let subject_name_strategy = SubjectNameStrategy::TopicNameStrategyWithSchema(
+                //     topic.clone(),
+                //     true,
+                //     get_supplied_schema(&schema),
+                // );
+                SchemaRegistry {
+                    // url: endpoint.clone(),
+                    // schema,
+                    // sr_settings,
+                    // schema_id: id,
+                    // subject_name_strategy,
+                    avro_decoder,
+                }
+            }),
         }
     }
-    pub async fn consume(&self) -> anyhow::Result<String> {
+    pub async fn consume(&self, partition_offset: Option<(i32, i64)>) -> anyhow::Result<Vec<u8>> {
         let context = CustomContext;
-        let consumer: LoggingConsumer = self.client.clone()
+        log::info!(
+            "consuming with group.id: {}",
+            self.consumer_group_id.clone()
+        );
+        let consumer: LoggingConsumer = self
+            .client
+            .clone()
             .set("group.id", self.consumer_group_id.clone())
+            .set("group.instance.id", self.consumer_group_id.clone())
             // .set("bootstrap.servers", brokers)
             .set("enable.partition.eof", "false")
             .set("session.timeout.ms", "6000")
             .set("enable.auto.commit", "false") // TODO do we want to commit?
+            .set("enable.auto.offset.store", "false") // TODO do we want to commit?
             // .set("delivery.timeout.ms", "1000") // THIS IS THE DEFAULT IN KafkaConfig
             //.set("statistics.interval.ms", "30000")
-            //.set("auto.offset.reset", "smallest")
+            .set("auto.offset.reset", "latest")
+            // .set("auto.offset.reset", "earliest")
             .set_log_level(RDKafkaLogLevel::Debug)
             .create_with_context(context)
             .expect("Consumer creation failed");
+        let dur = Duration::from_secs(30);
+        use tokio::time::timeout;
 
-        match consumer.recv().await {
+        let mut l = TopicPartitionList::new();
+        l.add_partition(&self.topic, 0);
+
+        if let Some((partition, offset)) = partition_offset {
+            consumer.assign(&l).expect("assign must work");
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            consumer
+                .seek(
+                    self.topic.as_str(),
+                    partition,
+                    rdkafka::Offset::Offset(offset),
+                    dur,
+                )
+                .expect("seek must work");
+        } else {
+            consumer
+                .subscribe(&[self.topic.as_str()])
+                .expect("subscribe must work");
+        }
+
+        let future = timeout(dur, consumer.recv());
+        match future.await.expect("timeout waiting for a result for 10s") {
             Err(e) => panic!("Kafka error: {}", e),
-            Ok(m) => {
-                let payload = match m.payload_view::<str>() {
-                    None => "",
-                    Some(Ok(s)) => s,
-                    Some(Err(e)) => {
-                        warn!("Error while deserializing message payload: {:?}", e);
-                        ""
-                    }
+            Ok(message) => {
+                let context = if let Some(headers) = message.headers() {
+                    global::get_text_map_propagator(|propagator| {
+                        propagator.extract(&schema_registry::HeaderExtractor(&headers))
+                    })
+                } else {
+                    Context::current()
                 };
-                info!("key: '{:?}', payload: '{}', topic: {}, partition: {}, offset: {}, timestamp: {:?}",
-                      m.key(), payload, m.topic(), m.partition(), m.offset(), m.timestamp());
-                if let Some(headers) = m.headers() {
-                    for header in headers.iter() {
-                        info!("  Header {:#?}: {:?}", header.key, header.value);
-                    }
-                }
-                // TODO do we want to commit?
-                // consumer.commit_message(&m, CommitMode::Async).unwrap();
 
-                Ok(payload.to_string())
+                let mut span: global::BoxedSpan =
+                    global::tracer("consumer").start_with_context("consume_payload", &context);
+
+                let payload: serde_json::Value = if let Some(sr) = &self.schema_registry {
+                    info!("Using avro encoder");
+                    let value_result = match sr.avro_decoder.decode(message.payload()).await {
+                        Ok(v) => v.value,
+                        Err(e) => {
+                            error!("Error getting value while decoding avro: {}", e);
+                            panic!("Error getting value while decoding avro: {}", e);
+                        }
+                    };
+                    value_result.try_into().unwrap()
+                } else {
+                    info!("Using string encoder");
+                    serde_json::from_slice(message.payload().unwrap()).unwrap()
+                };
+                // self.consumer
+                //     .commit_message(&message, CommitMode::Async)
+                //     .unwrap();
+                span.end();
+
+                Ok(payload.to_string().into_bytes())
             }
         }
     }
