@@ -33,7 +33,7 @@ pub struct KafkaConfig {
     pub securityprotocol: String,
     pub endpoint: String,
     pub sasl: Option<Sasl>,
-    #[serde(rename = "schema-registry")]
+    #[serde(rename = "schemaregistry")]
     pub schema_registry: Option<SchemaRegistryConfig>,
 }
 
