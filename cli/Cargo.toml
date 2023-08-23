@@ -1,0 +1,21 @@
+[package]
+name = "cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "kafka-cli"
+path = "src/main.rs"
+
+[dependencies]
+args = {path = "../crates/args"}
+kafka-config = {path = "../crates/kafka-config"}
+kafka-consumer = {path = "../crates/kafka-consumer"}
+kafka-producer = {path = "../crates/kafka-producer"}
+env_logger = {workspace = true}
+log = {workspace = true}
+clap = {workspace = true}
+tokio = {version = "1", features = ["full"]}
+serde = {workspace = true}
+serde_json = {workspace = true}
+apache-avro = {workspace = true}

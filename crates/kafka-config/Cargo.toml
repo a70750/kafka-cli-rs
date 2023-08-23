@@ -1,0 +1,11 @@
+[package]
+name = "kafka-config"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+config = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+rdkafka = { workspace = true }
+anyhow = { workspace = true }
+url = { workspace = true }
