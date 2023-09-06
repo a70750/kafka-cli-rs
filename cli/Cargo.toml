@@ -12,6 +12,7 @@ args = {path = "../crates/args"}
 kafka-config = {path = "../crates/kafka-config"}
 kafka-consumer = {path = "../crates/kafka-consumer"}
 kafka-producer = {path = "../crates/kafka-producer"}
+schema-registry ={ path = "../crates/schema-registry"}
 env_logger = {workspace = true}
 log = {workspace = true}
 clap = {workspace = true}

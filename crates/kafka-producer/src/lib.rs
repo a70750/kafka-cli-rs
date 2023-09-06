@@ -1,6 +1,8 @@
 use apache_avro::types::Value;
-use apache_avro::{Reader, Schema};
-use kafka_config::SchemaRegistryConfig;
+use apache_avro::{Reader, Schema, Writer};
+use core::panic;
+use kafka_config::producer::ProducerConfig;
+use kafka_config::KafkaConfig;
 use opentelemetry::trace::{Span, TraceContextExt, Tracer};
 use opentelemetry::{global, Context, Key, KeyValue, StringValue};
 use rdkafka::message::{Header, OwnedHeaders};
@@ -8,79 +10,77 @@ use rdkafka::producer::FutureProducer;
 use rdkafka::producer::FutureRecord;
 use rdkafka::util::Timeout;
 use rdkafka::ClientConfig;
+use schema_registry::schema_from_file;
 use schema_registry_converter::async_impl::avro::AvroEncoder;
-use schema_registry_converter::async_impl::schema_registry::{get_schema_by_id, SrSettings};
-use schema_registry_converter::schema_registry_common::SubjectNameStrategy;
+use schema_registry_converter::async_impl::schema_registry::{
+    get_schema_by_id, get_schema_by_subject, SrSettings,
+};
+use schema_registry_converter::schema_registry_common::{SchemaType, SubjectNameStrategy};
 use std::fs;
 use std::io::BufReader;
 use std::path::PathBuf;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 pub struct KafkaProducer<'a> {
-    client: ClientConfig,
+    // client: ClientConfig,
     topic: String,
-    message_file: PathBuf,
+    value_file: PathBuf,
     key_file: PathBuf,
     schema_registry: Option<SchemaRegistry<'a>>,
     producer: FutureProducer,
+    key_schema: Option<Schema>,
+    value_schema: Option<Schema>,
 }
 
 pub struct SchemaRegistry<'a> {
     // url: url::Url,
-    subject_name_strategy: SubjectNameStrategy,
-    schema_id: u32,
+    subject_name_strategy_value: SubjectNameStrategy,
+    subject_name_strategy_key: SubjectNameStrategy,
+    value_schema_id: Option<u32>,
+    key_schema_id: Option<u32>,
     avro_encoder: AvroEncoder<'a>,
     sr_settings: SrSettings,
-    schema: Schema,
 }
 
 impl KafkaProducer<'_> {
-    pub fn new(
-        config: &kafka_config::KafkaConfig,
-        topic: &String,
-        key_file: &PathBuf,
-        message_file: &PathBuf,
-        schema_id: &Option<u32>,
-    ) -> Self {
-        let client: ClientConfig = config.clone().into();
+    pub fn new(kafka_config: &KafkaConfig, producer_config: ProducerConfig) -> Self {
+        let client: ClientConfig = kafka_config.clone().into();
 
         Self {
-            topic: topic.clone(),
+            topic: producer_config.topic.clone(),
             producer: client.create().expect("Producer creation error"),
-            client,
-            message_file: message_file.clone(),
-            key_file: key_file.clone(),
-            schema_registry: schema_id.clone().map(|id| {
-                let SchemaRegistryConfig {
-                    username,
-                    password,
-                    endpoint,
-                } = config
-                    .schema_registry
-                    .as_ref()
-                    .expect("schema registry config must be provided when using schema registry");
-                let sr_settings: SrSettings = SrSettings::new_builder(endpoint.to_string())
-                    .set_basic_authorization(username, Some(password))
+            // client,
+            value_file: producer_config.value_file.clone(),
+            key_file: producer_config.key_file.clone(),
+            key_schema: producer_config
+                .key_schema_file
+                .clone()
+                .map(|path| schema_from_file(path)),
+            value_schema: producer_config
+                .value_schema_file
+                .clone()
+                .map(|path| schema_from_file(path)),
+
+            schema_registry: kafka_config.schema_registry.clone().map(|c| {
+                let sr_settings: SrSettings = SrSettings::new_builder(c.endpoint.to_string())
+                    .set_basic_authorization(&c.username, Some(&c.password))
                     .build()
                     .expect("Failed to build schema registry settings");
                 let avro_encoder = AvroEncoder::new(sr_settings.clone());
-                let schema = fs::read_to_string("resources/msg.avro")
-                    .expect("Should have been able to read the file");
-                let schema: Schema = Schema::parse_str(&schema).unwrap();
-                let subject_name_strategy =
-                    SubjectNameStrategy::TopicNameStrategy(topic.clone(), false);
-                // upload schema!
-                // let subject_name_strategy = SubjectNameStrategy::TopicNameStrategyWithSchema(
-                //     topic.clone(),
-                //     true,
-                //     get_supplied_schema(&schema),
-                // );
+
                 SchemaRegistry {
                     // url: endpoint.clone(),
-                    schema,
                     sr_settings,
-                    schema_id: id,
-                    subject_name_strategy,
+                    value_schema_id: producer_config.value_schema_id.clone(),
+                    key_schema_id: producer_config.key_schema_id.clone(),
+                    subject_name_strategy_key: SubjectNameStrategy::TopicNameStrategy(
+                        producer_config.topic.clone(),
+                        true,
+                    ),
+                    subject_name_strategy_value: SubjectNameStrategy::TopicNameStrategy(
+                        producer_config.topic.clone(),
+                        false,
+                    ),
                     avro_encoder,
                 }
             }),
@@ -109,83 +109,8 @@ impl KafkaProducer<'_> {
             propagator.inject_context(&context, &mut schema_registry::HeaderInjector(&mut headers))
         });
 
-        let message =
-            fs::read_to_string(&self.message_file).expect("Should have been able to read the file");
-
-        let payload = if let Some(sr) = &self.schema_registry {
-            info!("Using avro encoder");
-
-            let schema1 = get_schema_by_id(sr.schema_id.clone(), &sr.sr_settings)
-                .await
-                .expect("schema not found");
-
-            let schema1 = Schema::parse_str(&schema1.schema).unwrap();
-            pretty_assertions::assert_eq!(sr.schema, schema1);
-            let file = fs::File::open(self.message_file.clone()).unwrap();
-            let extension = self
-                .message_file
-                .extension()
-                .expect("message_file must have extension");
-
-            let map = if extension == "avro" {
-                let reader = BufReader::new(file);
-                // let mut reader = Reader::with_schema(&schema1, reader).unwrap();
-                let mut reader: Reader<'_, BufReader<fs::File>> = Reader::new(reader).unwrap();
-                let value = reader.next().unwrap().unwrap();
-                value
-            } else if extension == "json" {
-                // let reader = Cursor::new(file);
-                let text = fs::read_to_string(self.message_file.clone()).unwrap();
-                let value: serde_json::Value =
-                    serde_json::from_str::<serde_json::Value>(&text).unwrap();
-                println!("json value: {:?}", value);
-                let value: Value = value.into();
-                println!("avro value: {:?}", value);
-                if !value.validate(&sr.schema) {
-                    panic!(
-                        "Invalid value! Json message {:?} is not a valid schema: {:?}",
-                        value, &sr.schema
-                    );
-                }
-                value
-            } else {
-                panic!("Unsupported file extension {:?}", extension)
-            };
-
-            let value = match map {
-                Value::Map(ref record) => {
-                    let map: Vec<(&str, Value)> = record
-                        .iter()
-                        .map(|(k, v)| (k.as_str(), v.clone()))
-                        .collect();
-                    map
-                }
-                Value::Record(ref record) => {
-                    let map: Vec<(&str, Value)> = record
-                        .iter()
-                        .map(|(k, v)| (k.as_str(), v.clone()))
-                        .collect();
-                    map
-                }
-                _ => panic!("Unsupported value type {:?}", map),
-            };
-            println!("value: {:?}", value);
-
-            let payload = match sr
-                .avro_encoder
-                .encode(value, sr.subject_name_strategy.clone())
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => panic!("Error encoding avro payload: {}", e),
-            };
-            payload
-        } else {
-            message.as_bytes().to_vec()
-        };
-
-        let key =
-            fs::read_to_string(&self.key_file).expect("Should have been able to read the file");
+        let payload = self.encode_payload().await?;
+        let key = self.encode_key().await?;
 
         let delivery_status = self
             .producer
@@ -209,6 +134,165 @@ impl KafkaProducer<'_> {
             }
         }
     }
+
+    async fn encode_key(&self) -> anyhow::Result<Vec<u8>> {
+        if let Some(ref schema_registry) = self.schema_registry {
+            if self.key_schema.is_some() {
+                warn!("provided schema is ignored, since schema registry is used");
+            }
+            encode_value_or_key(
+                &schema_registry.sr_settings,
+                &self.key_file,
+                &schema_registry.subject_name_strategy_key,
+                &schema_registry.key_schema_id,
+                &schema_registry.avro_encoder,
+            )
+            .await
+        } else if let Some(schema) = &self.key_schema {
+            let mut writer = Writer::new(&schema, Vec::new());
+            let value =
+                avro_value_from_file(&self.key_file, &schema).expect("Failed to read value file");
+            writer.append_value_ref(&value).unwrap();
+
+            let encoded = writer.into_inner().unwrap();
+            Ok(encoded)
+        } else {
+            warn!("no schema used, we will use the key as is");
+            let value =
+                fs::read_to_string(&self.key_file).expect("Should have been able to read the file");
+            Ok(value.into_bytes())
+        }
+    }
+    async fn encode_payload(&self) -> anyhow::Result<Vec<u8>> {
+        if let Some(ref schema_registry) = self.schema_registry {
+            if self.value_schema.is_some() {
+                warn!("provided schema is ignored, since schema registry is used");
+            }
+            encode_value_or_key(
+                &schema_registry.sr_settings,
+                &self.value_file,
+                &schema_registry.subject_name_strategy_value,
+                &schema_registry.value_schema_id,
+                &schema_registry.avro_encoder,
+            )
+            .await
+        } else if let Some(schema) = &self.value_schema {
+            let mut writer = Writer::new(&schema, Vec::new());
+            let value =
+                avro_value_from_file(&self.value_file, &schema).expect("Failed to read value file");
+            writer.append_value_ref(&value).unwrap();
+
+            let encoded = writer.into_inner().unwrap();
+            Ok(encoded)
+        } else {
+            warn!("no schema used, we will use the value as is");
+            let value = fs::read_to_string(&self.value_file)
+                .expect("Should have been able to read the file");
+            Ok(value.into_bytes())
+        }
+    }
+}
+
+async fn encode_value_or_key(
+    sr_settings: &SrSettings,
+    data_file: &PathBuf,
+    subject_name_strategy: &SubjectNameStrategy,
+    schema_id: &Option<u32>,
+    avro_encoder: &AvroEncoder<'_>,
+) -> anyhow::Result<Vec<u8>> {
+    info!("Using schema registry & avro encoder");
+
+    let registered_schema = if let Some(schema_id) = schema_id {
+        // get_schema_by_id_and_type(id, sr_settings, schema_type)
+        get_schema_by_id(*schema_id, &sr_settings)
+            .await
+            .expect("schema not found")
+    } else {
+        get_schema_by_subject(&sr_settings, &subject_name_strategy)
+            .await
+            .expect("schema not found")
+    };
+
+    info!(
+        "schmema loaded from schema registry: {:?}",
+        registered_schema
+    );
+
+    let value_schema = if registered_schema.schema_type == SchemaType::Avro {
+        Schema::parse_str(&registered_schema.schema).unwrap()
+    } else if registered_schema.schema_type == SchemaType::Json {
+        unimplemented!("Json Schemas are not supported yet");
+        // let schema = serde_json::from_str::<serde_json::Value>(&s.schema).unwrap();
+        // let schema = Schema::parse(&schema).unwrap();
+        // schema
+    } else if registered_schema.schema_type == SchemaType::Protobuf {
+        unimplemented!("Protobuf Schemas are not supported yet");
+    } else {
+        unimplemented!("Only Topics with Schema are supported");
+    };
+
+    let value: Value =
+        avro_value_from_file(&data_file, &value_schema).expect("Failed to read value file");
+    info!("value: {:?}", value);
+
+    let value = match value {
+        Value::Map(ref record) => {
+            let map: Vec<(&str, Value)> = record
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.clone()))
+                .collect();
+            map
+        }
+        Value::Record(ref record) => {
+            let map: Vec<(&str, Value)> = record
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.clone()))
+                .collect();
+            map
+        }
+        _ => panic!("Unsupported value type {:?}", value),
+    };
+
+    let payload = match avro_encoder
+        .encode(value, subject_name_strategy.clone())
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => panic!("Error encoding avro payload: {}", e),
+    };
+
+    Ok(payload)
+}
+
+fn avro_value_from_file(file: &PathBuf, schema: &Schema) -> anyhow::Result<Value> {
+    let f = fs::File::open(file.clone()).unwrap();
+    let extension = file.extension().expect("message_file must have extension");
+
+    let map = if extension == "avro" {
+        let reader = BufReader::new(f);
+        let mut reader = Reader::with_schema(&schema, reader).unwrap();
+        // let mut reader: Reader<'_, BufReader<fs::File>> = Reader::new(reader).unwrap();
+        let value = reader.next().unwrap().unwrap();
+        value
+    } else if extension == "json" {
+        // let reader = Cursor::new(file);
+        let text = fs::read_to_string(file.clone()).unwrap();
+        let value: serde_json::Value = serde_json::from_str::<serde_json::Value>(&text).unwrap();
+        println!("json value: {:?}", value);
+        let value: Value = value.into();
+        println!("avro value: {:?}", value);
+        if !value.validate(&schema) {
+            panic!(
+                "Invalid value! Json message {:?} is not a valid schema: {:?}",
+                value, &schema
+            );
+        }
+        value
+    } else {
+        panic!("Unsupported file extension {:?}", extension)
+    };
+
+    Ok(map)
 }
 
 // #[cfg(test)]

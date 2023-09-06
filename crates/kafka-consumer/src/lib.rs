@@ -1,4 +1,4 @@
-use apache_avro::{from_value, Schema};
+use apache_avro::{from_value, Reader, Schema};
 use kafka_config::SchemaRegistryConfig;
 use log::{error, info};
 use opentelemetry::{
@@ -11,12 +11,12 @@ use rdkafka::config::{ClientConfig, RDKafkaLogLevel};
 use rdkafka::consumer::stream_consumer::StreamConsumer;
 use rdkafka::consumer::*;
 use rdkafka::error::KafkaResult;
-use rdkafka::message::{Headers, Message};
+use rdkafka::message::Message;
 use rdkafka::topic_partition_list::TopicPartitionList;
+use schema_registry::schema_from_file;
 use schema_registry_converter::async_impl::{avro::AvroDecoder, schema_registry::SrSettings};
 
 use core::panic;
-use std::path::PathBuf;
 use std::time::Duration;
 
 pub struct SchemaRegistry<'a> {
@@ -35,32 +35,35 @@ pub struct KafkaConsumer<'a> {
     consumer_group_id: String,
     // partition: Option<u32>,
     schema_registry: Option<SchemaRegistry<'a>>,
+    key_schema: Option<Schema>,
+    value_schema: Option<Schema>,
 }
 
 impl KafkaConsumer<'_> {
     pub fn new(
         config: &kafka_config::KafkaConfig,
-        topic: &String,
-        key_file: &Option<PathBuf>,
-        consumer_group_id: &String,
-        partition: &Option<u32>,
-        schema_id: &Option<u32>,
+        consumer_config: kafka_config::consumer::ConsumerConfig,
     ) -> Self {
         Self {
-            topic: topic.clone(),
+            topic: consumer_config.topic.clone(),
             client: config.clone().into(),
             // key_file: key_file.clone(),
-            consumer_group_id: consumer_group_id.clone(),
+            consumer_group_id: consumer_config.consumer_group_id.clone(),
             // partition: partition.clone(),
-            schema_registry: schema_id.clone().map(|id| {
+            value_schema: consumer_config
+                .value_schema_file
+                .clone()
+                .map(|path| schema_from_file(path)),
+            key_schema: consumer_config
+                .key_schema_file
+                .clone()
+                .map(|path| schema_from_file(path)),
+            schema_registry: config.schema_registry.clone().map(|src| {
                 let SchemaRegistryConfig {
                     username,
                     password,
                     endpoint,
-                } = config
-                    .schema_registry
-                    .as_ref()
-                    .expect("schema registry config must be provided when using schema registry");
+                } = &src;
                 let sr_settings: SrSettings = SrSettings::new_builder(endpoint.to_string())
                     .set_basic_authorization(username, Some(password))
                     .build()
@@ -77,6 +80,7 @@ impl KafkaConsumer<'_> {
                 //     true,
                 //     get_supplied_schema(&schema),
                 // );
+
                 SchemaRegistry {
                     // url: endpoint.clone(),
                     // schema,
@@ -119,7 +123,7 @@ impl KafkaConsumer<'_> {
 
         if let Some((partition, offset)) = partition_offset {
             consumer.assign(&l).expect("assign must work");
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::time::sleep(Duration::from_millis(1000)).await;
             consumer
                 .seek(
                     self.topic.as_str(),
@@ -160,8 +164,26 @@ impl KafkaConsumer<'_> {
                     };
                     value_result.try_into().unwrap()
                 } else {
-                    info!("Using string encoder");
-                    serde_json::from_slice(message.payload().unwrap()).unwrap()
+                    if let Some(schema) = self.value_schema.clone() {
+                        info!("Using avro reader to decode message");
+                        let reader = Reader::with_schema(&schema, &message.payload().unwrap()[..])
+                            .expect("cannot create reader with value schema");
+                        let value = reader
+                            .into_iter()
+                            .next()
+                            .unwrap()
+                            .expect("cannot get value from reader");
+                        match apache_avro::from_value::<String>(&value) {
+                            Ok(v) => v.try_into().unwrap(),
+                            Err(e) => {
+                                error!("Error getting value while decoding avro: {}", e);
+                                panic!("Error getting value while decoding avro: {}", e);
+                            }
+                        }
+                    } else {
+                        info!("Using json decoder");
+                        serde_json::from_slice(message.payload().unwrap()).unwrap()
+                    }
                 };
                 // self.consumer
                 //     .commit_message(&message, CommitMode::Async)

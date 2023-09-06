@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use apache_avro::Schema;
 use opentelemetry::propagation::{Extractor, Injector};
 use rdkafka::message::{BorrowedHeaders, Headers, OwnedHeaders};
@@ -55,4 +57,15 @@ pub async fn register_schema(
     let sr_settings = SrSettings::new(schema_registry_url);
     let supplied_schema: SuppliedSchema = *get_supplied_schema(&schema);
     post_schema(&sr_settings, subject, supplied_schema).await
+}
+
+pub fn schema_from_file(path: PathBuf) -> Schema {
+    let schema = std::fs::read_to_string(path).expect("Should have been able to read the file");
+    let schema: Schema = Schema::parse_str(&schema).unwrap();
+    schema
+}
+pub fn supplied_schema_from_file(path: PathBuf) -> Box<SuppliedSchema> {
+    let schema = std::fs::read_to_string(path).expect("Should have been able to read the file");
+    let schema: Schema = Schema::parse_str(&schema).unwrap();
+    get_supplied_schema(&schema)
 }

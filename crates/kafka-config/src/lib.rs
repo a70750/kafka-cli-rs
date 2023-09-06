@@ -5,6 +5,9 @@ use serde::Deserialize;
 use serde::Serialize;
 use url::Url;
 
+pub mod consumer;
+pub mod producer;
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Sasl {
     pub username: String,
@@ -103,6 +106,9 @@ fn test_create_kafka_config() {
     std::env::set_var("KAFKA_ENDPOINT", "endpoint:9092");
     std::env::set_var("KAFKA_SASL_USERNAME", "username");
     std::env::set_var("KAFKA_SASL_PASSWORD", "password");
+    std::env::set_var("KAFKA_SCHEMAREGISTRY_ENDPOINT", "otherendpoint:8081");
+    std::env::set_var("KAFKA_SCHEMAREGISTRY_USERNAME", "username2");
+    std::env::set_var("KAFKA_SCHEMAREGISTRY_PASSWORD", "password2");
 
     let cfg: KafkaConfig = KafkaConfig::from_env().unwrap();
     let sasl = cfg.sasl.unwrap();
@@ -113,8 +119,17 @@ fn test_create_kafka_config() {
     assert_eq!(username, "username");
     assert_eq!(password, "password");
     assert_eq!(endpoint, "endpoint:9092");
+    assert_eq!(
+        cfg.schema_registry.clone().unwrap().endpoint,
+        Url::parse("otherendpoint:8081").unwrap()
+    );
+    assert_eq!(cfg.schema_registry.clone().unwrap().password, "password2");
+    assert_eq!(cfg.schema_registry.clone().unwrap().username, "username2");
 
     std::env::remove_var("KAFKA_ENDPOINT");
     std::env::remove_var("KAFKA_SASL_USERNAME");
     std::env::remove_var("KAFKA_SASL_PASSWORD");
+    std::env::remove_var("KAFKA_SCHEMAREGISTRY_ENDPOINT");
+    std::env::remove_var("KAFKA_SCHEMAREGISTRY_USERNAME");
+    std::env::remove_var("KAFKA_SCHEMAREGISTRY_PASSWORD");
 }

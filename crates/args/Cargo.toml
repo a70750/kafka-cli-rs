@@ -7,6 +7,8 @@ edition = "2021"
 
 [dependencies]
 
-clap = {workspace = true}
-url = {workspace = true}
-kafka-config = { path = "../kafka-config"}
+clap = { workspace = true }
+url = { workspace = true }
+config = { workspace = true }
+kafka-config = { path = "../kafka-config" }
+serde ={ workspace = true }

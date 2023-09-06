@@ -1,7 +1,11 @@
 use std::{io::BufReader, time::Duration};
 
+use apache_avro::Schema;
+use args::{SchemaUploadConfig, TestConfig};
 use clap::Parser;
 use env_logger::{Builder, Target};
+use kafka_config::KafkaConfig;
+use schema_registry::register_schema;
 use serde_json::Value;
 
 #[tokio::main]
@@ -23,24 +27,50 @@ async fn main() {
     }
     builder.init();
 
-    let config = kafka_config::KafkaConfig::from_env().unwrap();
+    let kafka_config = kafka_config::KafkaConfig::from_env().unwrap();
 
     match args.action {
-        args::Action::Consume(args::ConsumerConfig {
-            ref topic,
-            ref key_file,
-            ref consumer_group_id,
-            ref partition,
-            ref schema_id,
+        args::Action::UploadSchema(SchemaUploadConfig {
+            value_schema_file,
+            key_schema_file,
+            subject,
         }) => {
-            let consumer = kafka_consumer::KafkaConsumer::new(
-                &config,
-                topic,
-                key_file,
-                consumer_group_id,
-                partition,
-                schema_id,
-            );
+            if let Some(file) = key_schema_file {
+                let schema =
+                    std::fs::read_to_string(file).expect("Should have been able to read the file");
+                let schema: Schema = Schema::parse_str(&schema).unwrap();
+                let id = register_schema(
+                    kafka_config
+                        .schema_registry
+                        .clone()
+                        .expect("schema-registry-config must exist to upload schemas")
+                        .endpoint
+                        .to_string(),
+                    format!("{}-key", subject),
+                    schema,
+                )
+                .await
+                .expect("Upload key schema failed");
+                log::info!("New key schema id: {}", id.id);
+            }
+            let schema = std::fs::read_to_string(value_schema_file)
+                .expect("Should have been able to read the file");
+            let value_schema: Schema = Schema::parse_str(&schema).unwrap();
+            let id = register_schema(
+                kafka_config
+                    .schema_registry
+                    .expect("schema-registry-config must exist to upload schemas")
+                    .endpoint
+                    .to_string(),
+                format!("{}-value", subject),
+                value_schema,
+            )
+            .await
+            .expect("schema upload failed");
+            log::info!("New value schema id: {}", id.id);
+        }
+        args::Action::Consume(args) => {
+            let consumer = kafka_consumer::KafkaConsumer::new(&kafka_config, args.into());
             match consumer.consume(None).await {
                 Ok(_) => {
                     log::info!("Integration test passed");
@@ -51,19 +81,8 @@ async fn main() {
                 }
             }
         }
-        args::Action::Produce(args::ProducerConfig {
-            ref topic,
-            ref key_file,
-            ref message_file,
-            ref schema_id,
-        }) => {
-            let producer = kafka_producer::KafkaProducer::new(
-                &config,
-                topic,
-                key_file,
-                message_file.as_ref().unwrap(),
-                schema_id,
-            );
+        args::Action::Produce(args) => {
+            let producer = kafka_producer::KafkaProducer::new(&kafka_config, args.into());
             match producer.produce().await {
                 Ok(_) => {
                     log::info!("Message produced");
@@ -74,71 +93,64 @@ async fn main() {
                 }
             }
         }
-        args::Action::IntegrationTest(args::TestConfig {
-            ref topic,
-            ref key_file,
-            ref message_file,
-            ref consumer_group_id,
-            ref partition,
-            ref schema_id,
-        }) => {
-            let producer = kafka_producer::KafkaProducer::new(
-                &config,
-                topic,
-                key_file,
-                message_file.as_ref().unwrap(),
-                schema_id,
-            );
-            let consumer = kafka_consumer::KafkaConsumer::new(
-                &config,
-                topic,
-                &Some(key_file.clone()),
-                consumer_group_id,
-                partition,
-                schema_id,
-            );
-            match producer.produce().await {
-                Ok((partition, offset)) => {
-                    log::info!("Message produced at partiton {partition} and offset {offset}");
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                    match consumer.consume(Some((partition, offset))).await {
-                        Ok(msg) => {
-                            let expect = serde_json::from_slice::<Value>(
-                                std::fs::read(message_file.as_ref().unwrap())
-                                    .unwrap()
-                                    .as_slice(),
-                            )
-                            .unwrap();
-                            let msg =
-                                if let Ok(test) = serde_json::from_slice::<Value>(msg.as_slice()) {
-                                    log::info!("json result {test}");
-                                    test
-                                } else {
-                                    let reader = BufReader::new(msg.as_slice());
-                                    // let mut reader = Reader::with_schema(&schema1, reader).unwrap();
-                                    let mut reader: apache_avro::Reader<'_, BufReader<_>> =
-                                        apache_avro::Reader::new(reader).unwrap();
-                                    let value = reader.next().unwrap().unwrap();
-                                    let value: Value =
-                                        value.try_into().expect("cannot convert avro to json");
-                                    log::info!("msg {value}");
-                                    value
-                                };
-                            log::info!("expect {expect}");
-                            assert_eq!(msg, expect);
-                            log::info!("Integration test passed");
-                        }
-                        Err(e) => {
-                            log::error!("Integration test failed: {:?}", e);
-                            panic!("Integration test failed: {:?}", e);
-                        }
-                    }
+        args::Action::IntegrationTest(config) => {
+            let integration_test_config: TestConfig = config.into();
+            test(integration_test_config, kafka_config).await;
+        }
+        args::Action::IntegrationTestFiles(config) => {
+            let integration_test_config: TestConfig = config.into();
+            test(integration_test_config, kafka_config).await;
+        }
+        args::Action::IntegrationTestFolder(config) => {
+            let integration_test_config: TestConfig = config.into();
+            test(integration_test_config, kafka_config).await;
+        }
+    }
+}
+
+async fn test(integration_test_config: TestConfig, kafka_config: KafkaConfig) {
+    let producer =
+        kafka_producer::KafkaProducer::new(&kafka_config, integration_test_config.producer.into());
+    let consumer =
+        kafka_consumer::KafkaConsumer::new(&kafka_config, integration_test_config.consumer.into());
+    match producer.produce().await {
+        Ok((partition, offset)) => {
+            log::info!("Message produced at partiton {partition} and offset {offset}");
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            match consumer.consume(Some((partition, offset))).await {
+                Ok(msg) => {
+                    let expect = serde_json::from_slice::<Value>(
+                        std::fs::read(integration_test_config.assertion_value_file)
+                            .unwrap()
+                            .as_slice(),
+                    )
+                    .unwrap();
+                    let msg = if let Ok(test) = serde_json::from_slice::<Value>(msg.as_slice()) {
+                        log::info!("json result {test}");
+                        test
+                    } else {
+                        let reader = BufReader::new(msg.as_slice());
+                        // let mut reader = Reader::with_schema(&schema1, reader).unwrap();
+                        let mut reader: apache_avro::Reader<'_, BufReader<_>> =
+                            apache_avro::Reader::new(reader).unwrap();
+                        let value = reader.next().unwrap().unwrap();
+                        let value: Value = value.try_into().expect("cannot convert avro to json");
+                        log::info!("msg {value}");
+                        value
+                    };
+                    log::info!("expect {expect}");
+                    assert_eq!(msg, expect);
+                    log::info!("Integration test passed");
                 }
                 Err(e) => {
-                    log::error!("Message not produced: {:?}", e);
-                    panic!("Message not produced: {:?}", e);
+                    log::error!("Integration test failed: {:?}", e);
+                    panic!("Integration test failed: {:?}", e);
                 }
             }
+        }
+        Err(e) => {
+            log::error!("Message not produced: {:?}", e);
+            panic!("Message not produced: {:?}", e);
         }
     }
 }
