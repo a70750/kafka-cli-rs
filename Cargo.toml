@@ -3,10 +3,10 @@ members = ["cli", "crates/*"]
 
 [workspace.dependencies]
 pretty_assertions = "1"
-env_logger = "0.10"
+env_logger = "0.11"
 log = "0.4"
 url = { version = "2", features = ["serde"] }
-config = "0.13"
+config = "0.13"                                      # 0.14 is full of bugs right now and comes with bad licenses.
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
@@ -17,5 +17,5 @@ schema_registry_converter = "4"
 opentelemetry = "0.21"
 tracing = { version = "0.1", features = ["log"] }
 kafka-config = { path = "../crates/kafka-config" }
-rdkafka = { version = "0.36" }
+rdkafka = { version = "0.36", features = ["ssl"] } # https://github.com/fede1024/rust-rdkafka/issues/594
 uuid = { version = "1", features = ["serde", "v4"] }

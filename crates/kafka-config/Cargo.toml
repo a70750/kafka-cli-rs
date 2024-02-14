@@ -12,4 +12,4 @@ serde = { workspace = true, features = ["derive"] }
 url = { workspace = true }
 schema_registry_converter = { workspace = true, features = [] }
 [dev-dependencies]
-serial_test = "2"
+serial_test = "3"
