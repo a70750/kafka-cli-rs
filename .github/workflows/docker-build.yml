@@ -24,4 +24,4 @@ jobs:
           context: .
           file: ${{ matrix.dockerfile }}
           push: false
-          tags: kafka-cli:ci-${{ matrix.dockerfile }}-${{ github.sha }}
+          tags: kafka-cli:ci-${{ github.sha }}
