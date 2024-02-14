@@ -1,6 +1,6 @@
 ARG BASE_IMAGE=debian:bookworm-slim
 
-FROM lukemathwalker/cargo-chef:latest-rust-slim-bookworm AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-bookworm AS chef
 WORKDIR /app
 
 FROM chef AS planner
